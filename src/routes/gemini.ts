@@ -101,16 +101,28 @@ router.post('/analyze', async (req: Request, res: Response) => {
       console.log('   Response time:', apiResponseTime, 'ms');
       console.log('   Response received: SUCCESS');
     }
-    
-    const jsonText = (response.text || '').trim();
-    
+
+    // Safely extract text from Gemini response (SDK exposes text as a getter string)
+    const rawText = (response as any)?.text ?? '';
+
+    const jsonText = (rawText || '').trim();
+
     if (isDevelopment) {
       console.log('\n📄 [PARSING RESPONSE]');
       console.log('   Response text length:', jsonText.length, 'characters');
       console.log('   First 100 chars:', jsonText.substring(0, 100));
     }
-    
-    const parsedResponse = JSON.parse(jsonText);
+
+    if (!jsonText) {
+      throw new Error('Empty response from Gemini API');
+    }
+
+    let parsedResponse;
+    try {
+      parsedResponse = JSON.parse(jsonText);
+    } catch (parseErr: any) {
+      throw new Error(`Failed to parse Gemini response as JSON: ${parseErr.message}`);
+    }
     
     if (isDevelopment) {
       console.log('   JSON parsing: SUCCESS');
