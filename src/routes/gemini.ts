@@ -329,7 +329,7 @@ router.post('/smart-tags', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/tags/generate - Generate smart tags with fallback data
+// POST /api/tags/generate - Generate smart tags with Gemini AI and fallback
 router.post('/tags/generate', async (req: Request, res: Response) => {
   const { topic, intent, detected } = req.body;
   
@@ -347,53 +347,137 @@ router.post('/tags/generate', async (req: Request, res: Response) => {
     });
   }
   
-  // Fallback/stub tags for now
-  const fallbackTags = {
+  // Hardcoded fallback tags for safe defaults
+  const FALLBACK_TAGS = {
     role: [
-      'Act as a teacher explaining to a student',
-      'Act as a study partner',
-      'Act as an expert tutor',
-      'Act as a subject specialist'
+      'Act as a patient teacher explaining to a student',
+      'Act as a friendly study partner',
+      'Act as an expert tutor in this subject'
     ],
     context: [
-      `Student in class ${detected?.class || '10'}`,
-      `${detected?.board || 'CBSE'} curriculum`,
-      `Subject: ${detected?.subject || 'General'}`,
-      'Preparing for exams'
+      `Student in class ${detected?.class || '10'} studying ${detected?.subject || 'this topic'}`,
+      `Following ${detected?.board || 'CBSE'} curriculum guidelines`,
+      'Preparing for understanding and exams'
     ],
     output: [
-      'Explain in simple terms',
-      'Provide step-by-step solution',
-      'Give examples with diagrams',
-      'Summarize key points in bullet form',
-      'Create a mind map'
+      'Explain concepts in simple and clear language',
+      'Provide step-by-step solutions with examples',
+      'Summarize key points in easy bullet format'
     ],
     tone: [
-      'Friendly and encouraging',
-      'Clear and concise',
-      'Patient and supportive',
-      'Enthusiastic and motivating'
+      'Use friendly and encouraging language',
+      'Be clear, patient and supportive',
+      'Stay motivating and easy to understand'
     ],
     thinking: [
-      'Break down complex concepts',
-      'Use real-world examples',
-      'Connect to previous knowledge',
-      'Highlight common mistakes',
-      'Provide memory tricks'
+      'Break down complex ideas into smaller parts',
+      'Use real-world examples students can relate to',
+      'Highlight common mistakes and how to avoid them'
     ]
   };
   
-  if (isDevelopment) {
-    console.log('✅ Returning fallback tags (real Gemini integration pending)');
+  // If Gemini not configured, return fallback immediately
+  if (!genAI) {
+    if (isDevelopment) {
+      console.log('⚠️ Gemini not configured, returning fallback tags');
+    }
+    return res.json({
+      success: true,
+      tags: FALLBACK_TAGS,
+      metadata: detected || {},
+      fallback: true,
+      message: 'Using fallback tags. Gemini API not configured.'
+    });
   }
   
-  res.json({
-    success: true,
-    tags: fallbackTags,
-    metadata: detected || {},
-    fallback: true,
-    message: 'Using fallback tags. Gemini integration pending.'
-  });
+  try {
+    const detectedClass = detected?.class || 10;
+    const detectedBoard = detected?.board || 'CBSE';
+    const detectedSubject = detected?.subject || 'General';
+    
+    const systemInstruction = `You are an expert educational AI helping students (Class 6-12) and teachers build effective learning prompts. Generate smart tags that are child-safe, exam-appropriate, and helpful for learning.`;
+    
+    const prompt = `Generate Smart Tags for a student learning tool.
+Topic: ${topic}
+Detected: Class ${detectedClass}, ${detectedBoard}, ${detectedSubject}
+Intent: ${intent}
+
+Return exactly 3 suggestions for each category:
+role, context, output, tone, thinking.
+
+Each suggestion should be:
+- 12-18 words maximum
+- Simple English, child-safe, exam appropriate
+- Describes a clear benefit or approach for the student
+- Actionable and specific to the topic and intent
+
+Return JSON with this exact structure:
+{
+  "role": [3 role suggestions],
+  "context": [3 context suggestions],
+  "output": [3 output format suggestions],
+  "tone": [3 tone/style suggestions],
+  "thinking": [3 thinking/approach suggestions]
+}`;
+
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        role: { type: Type.ARRAY, items: { type: Type.STRING } },
+        context: { type: Type.ARRAY, items: { type: Type.STRING } },
+        output: { type: Type.ARRAY, items: { type: Type.STRING } },
+        tone: { type: Type.ARRAY, items: { type: Type.STRING } },
+        thinking: { type: Type.ARRAY, items: { type: Type.STRING } }
+      },
+      required: ["role", "context", "output", "tone", "thinking"]
+    };
+    
+    if (isDevelopment) {
+      console.log('🤖 Calling Gemini API for smart tags...');
+    }
+    
+    const response = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: schema,
+        temperature: 0.7,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
+    });
+    
+    const jsonText = (response.text || '').trim();
+    const parsedResponse = JSON.parse(jsonText);
+    
+    if (isDevelopment) {
+      console.log('✅ Gemini tags generated successfully');
+      console.log('   Categories:', Object.keys(parsedResponse).join(', '));
+    }
+    
+    res.json({
+      success: true,
+      tags: parsedResponse,
+      metadata: detected || {},
+      fallback: false
+    });
+    
+  } catch (error: any) {
+    if (isDevelopment) {
+      console.error('❌ Error generating tags with Gemini:', error.message);
+      console.error('   Returning fallback tags');
+    }
+    
+    // Return fallback on any error
+    res.json({
+      success: true,
+      tags: FALLBACK_TAGS,
+      metadata: detected || {},
+      fallback: true,
+      message: 'Using fallback tags due to generation error.'
+    });
+  }
 });
 
 // POST /api/prompt/generate - Generate final prompt from selected tags
