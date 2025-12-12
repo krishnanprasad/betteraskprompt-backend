@@ -329,4 +329,115 @@ router.post('/smart-tags', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/tags/generate - Generate smart tags with fallback data
+router.post('/tags/generate', async (req: Request, res: Response) => {
+  const { topic, intent, detected } = req.body;
+  
+  if (isDevelopment) {
+    console.log('\n📥 [INCOMING REQUEST] /api/tags/generate');
+    console.log('   Topic:', topic);
+    console.log('   Intent:', intent);
+    console.log('   Detected:', detected);
+  }
+  
+  if (!topic || !intent) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'topic and intent are required' 
+    });
+  }
+  
+  // Fallback/stub tags for now
+  const fallbackTags = {
+    role: [
+      'Act as a teacher explaining to a student',
+      'Act as a study partner',
+      'Act as an expert tutor',
+      'Act as a subject specialist'
+    ],
+    context: [
+      `Student in class ${detected?.class || '10'}`,
+      `${detected?.board || 'CBSE'} curriculum`,
+      `Subject: ${detected?.subject || 'General'}`,
+      'Preparing for exams'
+    ],
+    output: [
+      'Explain in simple terms',
+      'Provide step-by-step solution',
+      'Give examples with diagrams',
+      'Summarize key points in bullet form',
+      'Create a mind map'
+    ],
+    tone: [
+      'Friendly and encouraging',
+      'Clear and concise',
+      'Patient and supportive',
+      'Enthusiastic and motivating'
+    ],
+    thinking: [
+      'Break down complex concepts',
+      'Use real-world examples',
+      'Connect to previous knowledge',
+      'Highlight common mistakes',
+      'Provide memory tricks'
+    ]
+  };
+  
+  if (isDevelopment) {
+    console.log('✅ Returning fallback tags (real Gemini integration pending)');
+  }
+  
+  res.json({
+    success: true,
+    tags: fallbackTags,
+    metadata: detected || {},
+    fallback: true,
+    message: 'Using fallback tags. Gemini integration pending.'
+  });
+});
+
+// POST /api/prompt/generate - Generate final prompt from selected tags
+router.post('/prompt/generate', async (req: Request, res: Response) => {
+  const { topic, selectedTags, intent } = req.body;
+  
+  if (isDevelopment) {
+    console.log('\n📥 [INCOMING REQUEST] /api/prompt/generate');
+    console.log('   Topic:', topic);
+    console.log('   Intent:', intent);
+    console.log('   Selected tags:', selectedTags?.length || 0);
+  }
+  
+  if (!topic || !selectedTags || !intent) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'topic, selectedTags, and intent are required' 
+    });
+  }
+  
+  // Build prompt from selected tags
+  const intentMap: Record<string, string> = {
+    learn: 'I want to learn about',
+    test: 'I am preparing for a test on',
+    revise: 'I want to revise',
+    doubt: 'I have a doubt regarding'
+  };
+  
+  const intentPrefix = intentMap[intent] || 'I want to understand';
+  
+  const prompt = `${intentPrefix} "${topic}".
+
+${selectedTags.join('\n')}
+
+Please help me accordingly.`;
+  
+  if (isDevelopment) {
+    console.log('✅ Generated prompt length:', prompt.length);
+  }
+  
+  res.json({
+    success: true,
+    prompt
+  });
+});
+
 export default router;
