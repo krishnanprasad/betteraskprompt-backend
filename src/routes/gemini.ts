@@ -259,4 +259,74 @@ router.post('/analyze', async (req: Request, res: Response) => {
   }
 });
 
+// Smart Tags endpoint for Smart Tag Prompt Builder
+router.post('/smart-tags', async (req: Request, res: Response) => {
+  const { intent, topic } = req.body;
+  
+  if (isDevelopment) {
+    console.log('\n📥 [INCOMING REQUEST] /api/gemini/smart-tags');
+    console.log('   Intent:', intent);
+    console.log('   Topic:', topic);
+  }
+  
+  if (!intent || !topic) {
+    return res.status(400).json({ error: 'intent and topic are required' });
+  }
+  
+  if (!genAI) {
+    return res.status(500).json({ error: 'Service temporarily unavailable.' });
+  }
+  
+  try {
+    const systemInstruction = `You are an AI assistant helping students (Class 6-12) and teachers build effective AI prompts. Based on the user's intent and topic, generate smart tags across 5 categories: Role, Context, Output, Tone, and Thinking. Each category should have 3-5 relevant, actionable tag suggestions. Return the response as a JSON array of tag objects.`;
+    
+    const prompt = `Intent: ${intent}\nTopic: ${topic}\n\nGenerate smart tags for building an effective AI prompt.`;
+    
+    const schema = {
+      type: Type.OBJECT,
+      properties: {
+        tags: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              category: { type: Type.STRING, description: "One of: Role, Context, Output, Tone, Thinking" },
+              value: { type: Type.STRING, description: "The tag text" },
+              description: { type: Type.STRING, description: "Optional brief description" }
+            },
+            required: ["category", "value"]
+          }
+        }
+      },
+      required: ["tags"]
+    };
+    
+    const response = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: schema,
+        temperature: 0.7,
+        thinkingConfig: { thinkingBudget: 0 }
+      }
+    });
+    
+    const jsonText = (response.text || '').trim();
+    const parsedResponse = JSON.parse(jsonText);
+    
+    if (isDevelopment) {
+      console.log('✅ Generated', parsedResponse.tags?.length || 0, 'smart tags');
+    }
+    
+    res.json(parsedResponse);
+  } catch (error: any) {
+    if (isDevelopment) {
+      console.error('❌ Error generating smart tags:', error.message);
+    }
+    res.status(500).json({ error: 'Failed to generate smart tags' });
+  }
+});
+
 export default router;
