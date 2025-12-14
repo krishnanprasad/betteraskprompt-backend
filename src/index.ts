@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import geminiRouter from './routes/gemini.js';
+import tagsRouter from './routes/tags.js';
 
 const app = express();
 const PORT = process.env.PORT || 8080; // GCP uses PORT env variable
@@ -32,6 +33,7 @@ app.get('/health', (req: Request, res: Response) => {
 
 // API routes
 app.use('/api/gemini', geminiRouter);
+app.use('/api/tags', tagsRouter);
 
 // Root endpoint
 app.get('/', (req: Request, res: Response) => {
