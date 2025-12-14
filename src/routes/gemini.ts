@@ -331,12 +331,13 @@ router.post('/smart-tags', async (req: Request, res: Response) => {
 
 // POST /api/tags/generate - Generate smart tags with Gemini AI and fallback
 router.post('/tags/generate', async (req: Request, res: Response) => {
-  const { topic, intent, detected } = req.body;
+  const { topic, intent, detected, persona } = req.body;
   
   if (isDevelopment) {
     console.log('\n📥 [INCOMING REQUEST] /api/tags/generate');
     console.log('   Topic:', topic);
     console.log('   Intent:', intent);
+    console.log('   Persona:', persona);
     console.log('   Detected:', detected);
   }
   
@@ -354,25 +355,25 @@ router.post('/tags/generate', async (req: Request, res: Response) => {
       'Act as a friendly study partner',
       'Act as an expert tutor in this subject'
     ],
+    task: [
+      'Explain the core concepts simply',
+      'Create a practice quiz with answers',
+      'Summarize the main points'
+    ],
     context: [
       `Student in class ${detected?.class || '10'} studying ${detected?.subject || 'this topic'}`,
       `Following ${detected?.board || 'CBSE'} curriculum guidelines`,
       'Preparing for understanding and exams'
     ],
-    output: [
-      'Explain concepts in simple and clear language',
-      'Provide step-by-step solutions with examples',
-      'Summarize key points in easy bullet format'
+    format: [
+      'Use simple bullet points',
+      'Provide step-by-step examples',
+      'Include a summary table'
     ],
-    tone: [
-      'Use friendly and encouraging language',
-      'Be clear, patient and supportive',
-      'Stay motivating and easy to understand'
-    ],
-    thinking: [
-      'Break down complex ideas into smaller parts',
-      'Use real-world examples students can relate to',
-      'Highlight common mistakes and how to avoid them'
+    constraints: [
+      'Keep explanations short and clear',
+      'Avoid complex jargon',
+      'Focus on key exam topics'
     ]
   };
   
@@ -394,42 +395,46 @@ router.post('/tags/generate', async (req: Request, res: Response) => {
     const detectedClass = detected?.class || 10;
     const detectedBoard = detected?.board || 'CBSE';
     const detectedSubject = detected?.subject || 'General';
+    const userPersona = persona || 'Student';
     
-    const systemInstruction = `You are an expert educational AI helping students (Class 6-12) and teachers build effective learning prompts. Generate smart tags that are child-safe, exam-appropriate, and helpful for learning.`;
+    const systemInstruction = `You are an expert educational AI helping ${userPersona}s and teachers build effective learning prompts. Generate smart tags that are child-safe, exam-appropriate, and helpful for learning.`;
     
-    const prompt = `Generate Smart Tags for a student learning tool.
+    const prompt = `Generate Smart Tags for a ${userPersona} learning tool.
 Topic: ${topic}
 Detected: Class ${detectedClass}, ${detectedBoard}, ${detectedSubject}
 Intent: ${intent}
+Persona: ${userPersona}
 
 Return exactly 3 suggestions for each category:
-role, context, output, tone, thinking.
+role, task, context, format, constraints.
 
-Each suggestion should be:
-- 12-18 words maximum
-- Simple English, child-safe, exam appropriate
-- Describes a clear benefit or approach for the student
-- Actionable and specific to the topic and intent
+Rules for suggestions:
+1. Each suggestion must be 1 short sentence (12–18 words).
+2. Sound like a recommendation, not a command (e.g., "Suggest acting as...", "Consider explaining...").
+3. Be child-safe and exam-appropriate.
+4. Do NOT generate questions to fill forms.
+5. Do NOT return editable fields.
+6. Do NOT return long paragraphs.
 
 Return JSON with this exact structure:
 {
   "role": [3 role suggestions],
+  "task": [3 task suggestions],
   "context": [3 context suggestions],
-  "output": [3 output format suggestions],
-  "tone": [3 tone/style suggestions],
-  "thinking": [3 thinking/approach suggestions]
+  "format": [3 format suggestions],
+  "constraints": [3 constraints suggestions]
 }`;
 
     const schema = {
       type: Type.OBJECT,
       properties: {
         role: { type: Type.ARRAY, items: { type: Type.STRING } },
+        task: { type: Type.ARRAY, items: { type: Type.STRING } },
         context: { type: Type.ARRAY, items: { type: Type.STRING } },
-        output: { type: Type.ARRAY, items: { type: Type.STRING } },
-        tone: { type: Type.ARRAY, items: { type: Type.STRING } },
-        thinking: { type: Type.ARRAY, items: { type: Type.STRING } }
+        format: { type: Type.ARRAY, items: { type: Type.STRING } },
+        constraints: { type: Type.ARRAY, items: { type: Type.STRING } }
       },
-      required: ["role", "context", "output", "tone", "thinking"]
+      required: ["role", "task", "context", "format", "constraints"]
     };
     
     if (isDevelopment) {
