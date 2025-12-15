@@ -1,14 +1,95 @@
 import express, { Request, Response } from 'express';
 import { GoogleGenAI, Type } from '@google/genai';
+import OpenAI from 'openai';
 
 const router = express.Router();
 const isDevelopment = process.env.NODE_ENV !== 'production';
 
 const apiKey = process.env.GEMINI_API_SECRET;
+const openAiKey = process.env.OPEN_AI_SECRET;
+
 if (!apiKey) {
   console.error('GEMINI_API_SECRET not set. The server will not be able to process analyze requests.');
 }
 const genAI = apiKey ? new GoogleGenAI({ apiKey }) : null;
+const openai = openAiKey ? new OpenAI({ apiKey: openAiKey }) : null;
+
+// Helper function for OpenAI generation
+async function generateWithOpenAI(prompt: string, systemInstruction: string, schema: any) {
+  if (!openai) throw new Error("OpenAI API key not configured");
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      { role: "system", content: systemInstruction + "\n\nIMPORTANT: Return ONLY valid JSON matching the schema." },
+      { role: "user", content: prompt }
+    ],
+    response_format: { type: "json_object" }
+  });
+
+  const content = completion.choices[0].message.content;
+  if (!content) throw new Error("OpenAI returned empty content");
+  
+  return JSON.parse(content);
+}
+
+// Helper function for model fallback (Gemini -> OpenAI)
+async function generateWithFallback(
+  geminiModelName: string,
+  geminiFallbackModelName: string,
+  geminiParams: any,
+  openAiParams: { prompt: string, systemInstruction: string, schema: any }
+) {
+  // 1. Try Gemini Primary
+  try {
+    if (isDevelopment) console.log(`🤖 Attempting with Gemini: ${geminiModelName}`);
+    const result = await genAI!.models.generateContent({
+      model: geminiModelName,
+      ...geminiParams
+    });
+    if (isDevelopment) console.log("AI Provider Used: GEMINI");
+    return { result, provider: 'gemini' };
+  } catch (error: any) {
+    // 2. Try Gemini Fallback (Lite)
+    try {
+      if (
+        error.status === 429 || 
+        error.status === 503 || 
+        error.message?.includes('quota') || 
+        error.message?.includes('rate limit') ||
+        error.message?.includes('overloaded')
+      ) {
+        if (isDevelopment) console.warn(`⚠️ Gemini ${geminiModelName} failed. Retrying with ${geminiFallbackModelName}...`);
+        const result = await genAI!.models.generateContent({
+          model: geminiFallbackModelName,
+          ...geminiParams
+        });
+        if (isDevelopment) console.log("AI Provider Used: GEMINI (Fallback Model)");
+        return { result, provider: 'gemini' };
+      }
+      throw error; // Throw to catch block for OpenAI fallback
+    } catch (geminiError) {
+      // 3. Try OpenAI
+      if (openai) {
+        try {
+          if (isDevelopment) console.warn(`⚠️ Gemini failed. Switching to OpenAI...`);
+          const jsonResponse = await generateWithOpenAI(
+            openAiParams.prompt,
+            openAiParams.systemInstruction,
+            openAiParams.schema
+          );
+          if (isDevelopment) console.log("AI Provider Used: OPENAI");
+          return { result: jsonResponse, provider: 'openai' };
+        } catch (openAiError) {
+          console.error("OpenAI Fallback failed:", openAiError);
+        }
+      }
+      
+      if (isDevelopment) console.log("AI Provider Used: STATIC FALLBACK");
+      throw geminiError; // Throw original error to trigger static fallback in route handler
+    }
+  }
+}
 
 const schema = {
   type: Type.OBJECT,
@@ -83,17 +164,27 @@ router.post('/analyze', async (req: Request, res: Response) => {
     const systemInstruction = `You are an expert prompt engineering coach for high school and college students. Your goal is to analyze a student's prompt and help them improve it for better results from AI models. Evaluate the provided prompt on a scale of 0 to 100 based on its clarity, context, specificity, and inclusion of key elements like role, format, and tone. A score of 0 is a very poor, vague prompt, while 100 is a perfect, highly-detailed prompt. Provide constructive feedback and generate an improved version of the prompt, breaking it down into its core components (role, context, task, etc.). Your response must be a single, valid JSON object.`;
 
     const startTime = Date.now();
-    const response = await genAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: `Please analyze this student's prompt: "${studentPrompt}"`,
-      config: {
+    
+    const responseData = await generateWithFallback(
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+      {
+        contents: `Please analyze this student's prompt: "${studentPrompt}"`,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+          temperature: 0.3,
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      },
+      {
+        prompt: `Please analyze this student's prompt: "${studentPrompt}"`,
         systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: schema,
-        temperature: 0.3,
-        thinkingConfig: { thinkingBudget: 0 }
+        schema
       }
-    });
+    );
+    
     const apiResponseTime = Date.now() - startTime;
 
     if (isDevelopment) {
@@ -102,26 +193,35 @@ router.post('/analyze', async (req: Request, res: Response) => {
       console.log('   Response received: SUCCESS');
     }
 
-    // Safely extract text from Gemini response (SDK exposes text as a getter string)
-    const rawText = (response as any)?.text ?? '';
-
-    const jsonText = (rawText || '').trim();
-
-    if (isDevelopment) {
-      console.log('\n📄 [PARSING RESPONSE]');
-      console.log('   Response text length:', jsonText.length, 'characters');
-      console.log('   First 100 chars:', jsonText.substring(0, 100));
-    }
-
-    if (!jsonText) {
-      throw new Error('Empty response from Gemini API');
-    }
-
     let parsedResponse;
-    try {
-      parsedResponse = JSON.parse(jsonText);
-    } catch (parseErr: any) {
-      throw new Error(`Failed to parse Gemini response as JSON: ${parseErr.message}`);
+    
+    if (responseData.provider === 'gemini') {
+      // Safely extract text from Gemini response (SDK exposes text as a getter string)
+      const rawText = (responseData.result as any)?.text ?? '';
+      const jsonText = (rawText || '').trim();
+
+      if (isDevelopment) {
+        console.log('\n📄 [PARSING RESPONSE]');
+        console.log('   Response text length:', jsonText.length, 'characters');
+        console.log('   First 100 chars:', jsonText.substring(0, 100));
+      }
+
+      if (!jsonText) {
+        throw new Error('Empty response from Gemini API');
+      }
+
+      try {
+        parsedResponse = JSON.parse(jsonText);
+      } catch (parseErr: any) {
+        throw new Error(`Failed to parse Gemini response as JSON: ${parseErr.message}`);
+      }
+    } else {
+      // OpenAI returns parsed JSON directly
+      parsedResponse = responseData.result;
+    }
+    
+    if (isDevelopment && responseData.provider === 'openai') {
+      console.log("DONE: OpenAI fallback enabled for /analyze");
     }
     
     if (isDevelopment) {
@@ -301,23 +401,39 @@ router.post('/smart-tags', async (req: Request, res: Response) => {
       required: ["tags"]
     };
     
-    const response = await genAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
+    const responseData = await generateWithFallback(
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+      {
+        contents: prompt,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+          temperature: 0.7,
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      },
+      {
+        prompt,
         systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: schema,
-        temperature: 0.7,
-        thinkingConfig: { thinkingBudget: 0 }
+        schema
       }
-    });
+    );
     
-    const jsonText = (response.text || '').trim();
-    const parsedResponse = JSON.parse(jsonText);
+    let parsedResponse;
+    if (responseData.provider === 'gemini') {
+      const jsonText = ((responseData.result as any).text || '').trim();
+      parsedResponse = JSON.parse(jsonText);
+    } else {
+      parsedResponse = responseData.result;
+    }
     
     if (isDevelopment) {
       console.log('✅ Generated', parsedResponse.tags?.length || 0, 'smart tags');
+      if (responseData.provider === 'openai') {
+        console.log("DONE: OpenAI fallback enabled for /smart-tags");
+      }
     }
     
     res.json(parsedResponse);
@@ -441,24 +557,40 @@ Return JSON with this exact structure:
       console.log('🤖 Calling Gemini API for smart tags...');
     }
     
-    const response = await genAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-      config: {
+    const responseData = await generateWithFallback(
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+      {
+        contents: prompt,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+          temperature: 0.7,
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      },
+      {
+        prompt,
         systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: schema,
-        temperature: 0.7,
-        thinkingConfig: { thinkingBudget: 0 }
+        schema
       }
-    });
+    );
     
-    const jsonText = (response.text || '').trim();
-    const parsedResponse = JSON.parse(jsonText);
+    let parsedResponse;
+    if (responseData.provider === 'gemini') {
+      const jsonText = ((responseData.result as any).text || '').trim();
+      parsedResponse = JSON.parse(jsonText);
+    } else {
+      parsedResponse = responseData.result;
+    }
     
     if (isDevelopment) {
       console.log('✅ Gemini tags generated successfully');
       console.log('   Categories:', Object.keys(parsedResponse).join(', '));
+      if (responseData.provider === 'openai') {
+        console.log("DONE: OpenAI fallback enabled for /tags/generate");
+      }
     }
     
     res.json({
@@ -568,26 +700,42 @@ router.post('/tags', async (req: Request, res: Response) => {
       promptText += ` Provide a diverse set of initial suggestions.`;
     }
 
-    const result = await genAI.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: promptText,
-      config: {
+    const responseData = await generateWithFallback(
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+      {
+        contents: promptText,
+        config: {
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: tagsSchema,
+          temperature: 0.7,
+        }
+      },
+      {
+        prompt: promptText,
         systemInstruction,
-        responseMimeType: 'application/json',
-        responseSchema: tagsSchema,
-        temperature: 0.7,
+        schema: tagsSchema
       }
-    });
+    );
 
-    const responseText = (result as any).text?.() ?? (result as any).text ?? '';
-    const responseData = JSON.parse(responseText);
+    let responseDataJson;
+    if (responseData.provider === 'gemini') {
+      const responseText = (responseData.result as any).text?.() ?? (responseData.result as any).text ?? '';
+      responseDataJson = JSON.parse(responseText);
+    } else {
+      responseDataJson = responseData.result;
+    }
 
     if (isDevelopment) {
       console.log('\n✅ [GEMINI API RESPONSE] /tags');
-      console.log('   Tags:', responseData.tags);
+      console.log('   Tags:', responseDataJson.tags);
+      if (responseData.provider === 'openai') {
+        console.log("DONE: OpenAI fallback enabled for /tags");
+      }
     }
 
-    res.json(responseData);
+    res.json(responseDataJson);
 
   } catch (error) {
     console.error('Error generating tags:', error);
