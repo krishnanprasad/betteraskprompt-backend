@@ -1,6 +1,11 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
+import { GoogleGenAI, Type } from '@google/genai';
 
 const router = express.Router();
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
+const apiKey = process.env.GEMINI_API_SECRET;
+const genAI = apiKey ? new GoogleGenAI({ apiKey }) : null;
 
 // Fallback/Static data for when AI fails or is unavailable
 // This mirrors the frontend structure for consistency
@@ -28,41 +33,108 @@ const FALLBACK_TAGS: Record<string, Record<string, string[]>> = {
   }
 };
 
-router.post('/generate', async (req, res) => {
+router.post('/generate', async (req: Request, res: Response) => {
+  const { topic, intent, persona, stage, selectedTags = [], visibleTags = [] } = req.body;
+
+  if (isDevelopment) {
+    console.log('\n📥 [INCOMING REQUEST] /api/tags/generate');
+    console.log('   Params:', { topic, intent, persona, stage });
+  }
+
+  // 1. Validation
+  if (!topic || !intent || !persona) {
+    return res.status(400).json({ success: false, message: 'Missing required fields' });
+  }
+
+  // 2. Fallback if no API key
+  if (!genAI) {
+    if (isDevelopment) console.warn('⚠️ Gemini API not configured');
+    return res.json({ success: false, tags: [], fallback: true, message: 'Gemini API not configured' });
+  }
+
   try {
-    const { topic, intent, persona, stage, selectedTags, avoidDuplicates, detected } = req.body;
-
-    // TODO: Integrate actual Gemini AI call here
-    // For now, we return the robust fallback data to satisfy the contract
+    // 3. Construct Prompt
+    const count = stage === 1 ? 3 : 5;
+    const existingTags = [...new Set([...selectedTags, ...visibleTags])];
     
-    // Simulate AI processing delay
-    // await new Promise(resolve => setTimeout(resolve, 500));
-
-    const tags = FALLBACK_TAGS[persona]?.[intent] || [];
+    const systemInstruction = `You are an expert educational prompt engineer. Your task is to generate "Smart Tags" - short, action-oriented suggestions that help a user refine their prompt.
     
-    // If stage 2, we might filter or adjust based on selectedTags if we had dynamic AI
-    // For static fallback, we return the full set and let frontend handle display logic
+    Constraints:
+    1. Each tag must be exactly 3 to 4 words long.
+    2. Each tag must start with a strong verb (e.g., Include, Add, Explain, Give, Use, Make, Provide, Compare, Highlight).
+    3. Tags must be safe for students and appropriate for a school setting.
+    4. Do NOT duplicate any of these existing tags: ${existingTags.join(', ')}.
+    5. Return exactly ${count} tags.
+    `;
+
+    const userPrompt = `Generate ${count} smart tags for a prompt about "${topic}".
+    Persona: ${persona}
+    Intent: ${intent}
+    Stage: ${stage} (1 = Initial suggestions, 2 = Follow-up suggestions)`;
+
+    // 4. Define Schema
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        tags: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description: "List of generated smart tags"
+        }
+      },
+      required: ["tags"]
+    };
+
+    // 5. Call Gemini
+    const result = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: userPrompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: responseSchema,
+        temperature: 0.7
+      }
+    });
+
+    // 6. Parse Response
+    const responseText = (result as any).text?.() ?? (result as any).text ?? '';
+    const data = JSON.parse(responseText);
+    let generatedTags: string[] = data.tags || [];
+
+    if (isDevelopment) {
+      console.log('   Raw Tags:', generatedTags);
+    }
+
+    // 7. Validate Tags (Word count & Verb check)
+    generatedTags = generatedTags.filter(tag => {
+      const words = tag.trim().split(/\s+/);
+      const wordCount = words.length;
+      // Check word count (3-4)
+      if (wordCount < 3 || wordCount > 4) return false;
+      return true;
+    });
+
+    if (generatedTags.length === 0) {
+       throw new Error('No valid tags generated after validation');
+    }
+
+    // Limit to requested count
+    const finalTags = generatedTags.slice(0, count);
 
     res.json({
       success: true,
-      tags: tags,
-      metadata: {
-        source: 'fallback', // or 'ai'
-        stage: stage,
-        processingTime: 0
-      },
-      fallback: true, // Explicitly signal this is fallback data
-      message: 'Generated using fallback logic'
+      tags: finalTags,
+      fallback: false
     });
 
   } catch (error) {
-    console.error('Tag generation error:', error);
-    res.status(500).json({
+    console.error('Gemini Tag Generation Error:', error);
+    res.json({
       success: false,
       tags: [],
-      metadata: {},
       fallback: true,
-      message: 'Internal server error, using fallback'
+      message: error instanceof Error ? error.message : 'Unknown error'
     });
   }
 });
