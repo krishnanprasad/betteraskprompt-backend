@@ -529,4 +529,70 @@ Please help me accordingly.`;
   });
 });
 
+const tagsSchema = {
+  type: Type.OBJECT,
+  properties: {
+    tags: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "A list of short, relevant smart tags (3-4 words each)."
+    }
+  },
+  required: ["tags"]
+};
+
+router.post('/tags', async (req: Request, res: Response) => {
+  if (isDevelopment) {
+    console.log('\n📥 [INCOMING REQUEST] /api/gemini/tags');
+    console.log('   Request body:', JSON.stringify(req.body, null, 2));
+  }
+
+  const { topic, intent, persona, stage, selectedTags } = req.body;
+
+  if (!topic || !intent || !persona) {
+    return res.status(400).json({ error: 'topic, intent, and persona are required' });
+  }
+
+  if (!genAI) {
+    return res.status(500).json({ error: 'Gemini API not configured' });
+  }
+
+  try {
+    const systemInstruction = `You are a prompt engineering assistant. Generate relevant 'smart tags' or requirements for a prompt based on the user's topic, intent, and persona. Tags should be short (3-4 words max). Return a JSON object with a 'tags' array.`;
+    
+    let promptText = `Generate smart tags for a prompt about "${topic}". Persona: ${persona}. Intent: ${intent}.`;
+    
+    if (stage === 2 && selectedTags && selectedTags.length > 0) {
+      promptText += ` The user has already selected: ${selectedTags.join(', ')}. Provide additional, complementary tags that go well with these. Avoid duplicates.`;
+    } else {
+      promptText += ` Provide a diverse set of initial suggestions.`;
+    }
+
+    const result = await genAI.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: promptText,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: tagsSchema,
+        temperature: 0.7,
+      }
+    });
+
+    const responseText = (result as any).text?.() ?? (result as any).text ?? '';
+    const responseData = JSON.parse(responseText);
+
+    if (isDevelopment) {
+      console.log('\n✅ [GEMINI API RESPONSE] /tags');
+      console.log('   Tags:', responseData.tags);
+    }
+
+    res.json(responseData);
+
+  } catch (error) {
+    console.error('Error generating tags:', error);
+    res.status(500).json({ error: 'Failed to generate tags' });
+  }
+});
+
 export default router;
