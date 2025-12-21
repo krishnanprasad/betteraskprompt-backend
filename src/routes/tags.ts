@@ -284,4 +284,162 @@ router.post('/generate', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/tags/output-suggestions - Generate AI-driven output format suggestions
+router.post('/output-suggestions', async (req: Request, res: Response) => {
+  const { topic, intent, persona, selectedSmartTags = [], selectedOutputTags = [] } = req.body;
+
+  if (isDevelopment) {
+    console.log('\n📥 [INCOMING REQUEST] /api/tags/output-suggestions');
+    console.log('   Params:', { topic, intent, persona, selectedSmartTags, selectedOutputTags });
+  }
+
+  // 1. Validation
+  if (!topic || !intent || !persona) {
+    return res.status(400).json({ success: false, message: 'Missing required fields' });
+  }
+
+  // 2. Check Cache
+  const cacheKey = `output:${topic}:${intent}:${persona}:${selectedSmartTags.join(',')}:${selectedOutputTags.join(',')}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    const age = Date.now() - cached.timestamp;
+    if (age < CACHE_TTL_MS) {
+      if (isDevelopment) console.log('   ✅ Serving from cache');
+      return res.json(cached.data);
+    } else {
+      cache.delete(cacheKey); // Expired
+    }
+  }
+
+  // 3. Fallback if no API key
+  const FALLBACK_OUTPUT = ["Numbered list format", "Visual diagram style", "Question answer pairs"];
+  if (!genAI) {
+    if (isDevelopment) console.warn('⚠️ Gemini API not configured');
+    return res.json({ 
+      success: true, 
+      suggestions: FALLBACK_OUTPUT, 
+      fallback: true, 
+      message: 'Gemini API not configured' 
+    });
+  }
+
+  try {
+    // 4. Construct Prompt
+    const existingOutputs = [...new Set(['Bullet points', 'Short summary', ...selectedOutputTags])];
+    
+    const systemInstruction = `You are an expert educational content formatter. Your task is to suggest OUTPUT FORMAT options that help students consume information effectively.
+
+Context:
+- Topic: ${topic}
+- Intent: ${intent}
+- Persona: ${persona}
+- Selected Smart Tags: ${selectedSmartTags.join(', ') || 'None'}
+
+Requirements:
+1. Generate exactly 3 output format suggestions
+2. Each suggestion must be 3-4 words long (not 2 words!)
+3. Must be DIFFERENT from these existing options: ${existingOutputs.join(', ')}
+4. Focus on HOW information should be structured/presented
+5. Be specific and actionable (good: "Table with columns", "Quiz + answer key"; bad: "List format", "Visual style")
+6. Appropriate for ${intent} intent (learn/test/revise/doubt)
+7. Do NOT use punctuation
+
+Examples of good suggestions:
+- "Table with columns"
+- "Stepwise numbered headings"
+- "Quiz with answer key"
+- "Timeline format diagram"
+- "Examples per key point"
+- "Comparison chart layout"
+- "Mind map structure"
+- "Flashcard question answers"`;
+
+    const userPrompt = `Generate 3 output format suggestions for the topic "${topic}" with intent "${intent}". 
+These should complement the selected smart tags: ${selectedSmartTags.join(', ') || 'None'}.
+Return as JSON array of strings.`;
+
+    // 5. Define Schema
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        suggestions: { 
+          type: Type.ARRAY, 
+          items: { type: Type.STRING },
+          minItems: 3,
+          maxItems: 3
+        }
+      },
+      required: ["suggestions"]
+    };
+
+    // 6. Call Gemini
+    const result = await genAI.models.generateContent({
+      model: 'gemini-1.5-flash',
+      contents: userPrompt,
+      config: {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: responseSchema,
+        temperature: 0.8
+      }
+    });
+
+    // 7. Parse Response
+    const responseText = result.text;
+    if (!responseText) {
+      throw new Error('No response text received from Gemini');
+    }
+    const parsed = JSON.parse(responseText);
+
+    if (isDevelopment) {
+      console.log('   Raw Suggestions:', parsed);
+    }
+
+    // Validate suggestions
+    const validateSuggestion = (suggestion: string) => {
+      const cleanSuggestion = suggestion.replace(/[^\w\s]/g, '').trim();
+      const words = cleanSuggestion.split(/\s+/);
+      return words.length >= 3 && words.length <= 4;
+    };
+
+    let suggestions = (parsed.suggestions || [])
+      .filter(validateSuggestion)
+      .map((s: string) => s.replace(/[^\w\s]/g, '').trim())
+      .filter((s: string) => !existingOutputs.includes(s));
+
+    // Ensure we have 3 suggestions, fallback if needed
+    if (suggestions.length < 3) {
+      const needed = 3 - suggestions.length;
+      const availableFallbacks = FALLBACK_OUTPUT.filter(f => !existingOutputs.includes(f) && !suggestions.includes(f));
+      suggestions = [...suggestions, ...availableFallbacks.slice(0, needed)];
+    }
+
+    // Limit to 3
+    suggestions = suggestions.slice(0, 3);
+
+    const responseData = { 
+      success: true, 
+      suggestions,
+      fallback: false
+    };
+
+    // 8. Update Cache
+    cache.set(cacheKey, {
+      data: responseData,
+      timestamp: Date.now()
+    });
+
+    res.json(responseData);
+
+  } catch (error) {
+    console.error('Gemini Output Suggestions Error:', error);
+    res.json({
+      success: true,
+      suggestions: FALLBACK_OUTPUT,
+      fallback: true,
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 export default router;
