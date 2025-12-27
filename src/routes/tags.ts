@@ -101,7 +101,10 @@ const FALLBACK_TAGS = [
   "Give Real World Examples",
   "Use Simple Language",
   "Format As Bullet Points",
-  "Include Practice Questions"
+  "Include Practice Questions",
+  "Act As Expert Tutor",
+  "Focus On Key Concepts",
+  "Avoid Technical Jargon"
 ];
 
 router.post('/generate', async (req: Request, res: Response) => {
@@ -118,7 +121,7 @@ router.post('/generate', async (req: Request, res: Response) => {
   }
 
   // 2. Check Cache
-  const cacheKey = `${topic}:${intent}:${persona}:${stage}`;
+  const cacheKey = `${topic}:${intent}:${persona}:7tags`; // Changed cache key for new count
   const cached = cache.get(cacheKey);
   if (cached) {
     const age = Date.now() - cached.timestamp;
@@ -135,7 +138,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     if (isDevelopment) console.warn('⚠️ Gemini API not configured');
     return res.json({ 
       success: true, 
-      tags: FALLBACK_TAGS.slice(0, stage === 1 ? 3 : 5), 
+      tags: FALLBACK_TAGS.slice(0, 7), 
       fallback: true, 
       message: 'Gemini API not configured' 
     });
@@ -143,7 +146,7 @@ router.post('/generate', async (req: Request, res: Response) => {
 
   try {
     // 4. Construct Prompt
-    const count = stage === 1 ? 3 : 5;
+    const count = 7; // Fixed to 7 tags
     const existingTags = [...new Set([...selectedTags, ...visibleTags])];
     
     const systemInstruction = `You are an expert educational prompt engineer. Your task is to generate "Smart Tags" - short, action-oriented suggestions that help a user refine their prompt.
@@ -161,13 +164,12 @@ router.post('/generate', async (req: Request, res: Response) => {
     3. Tags must be safe for students and appropriate for a school setting.
     4. Do NOT duplicate any of these existing tags: ${existingTags.join(', ')}.
     5. Do NOT use any punctuation in the tags (no periods, commas, etc.).
-    6. Generate exactly ${count} tags IN TOTAL across all categories combined. Pick the most relevant categories for the user's intent.
+    6. Generate exactly ${count} tags IN TOTAL across all categories combined. Distribute them to cover at least 3 different categories.
     `;
 
     const userPrompt = `Generate ${count} smart tags for a prompt about "${topic}".
     Persona: ${persona}
-    Intent: ${intent}
-    Stage: ${stage} (1 = Initial suggestions, 2 = Follow-up suggestions)`;
+    Intent: ${intent}`;
 
     // 5. Define Schema
     const responseSchema = {
@@ -277,7 +279,7 @@ router.post('/generate', async (req: Request, res: Response) => {
     console.error('Gemini Tag Generation Error:', error);
     res.json({
       success: true,
-      tags: FALLBACK_TAGS.slice(0, stage === 1 ? 3 : 5),
+      tags: FALLBACK_TAGS.slice(0, 7),
       fallback: true,
       message: error instanceof Error ? error.message : 'Unknown error'
     });
