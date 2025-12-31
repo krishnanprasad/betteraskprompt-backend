@@ -164,7 +164,13 @@ router.post('/generate', async (req: Request, res: Response) => {
     3. Tags must be safe for students and appropriate for a school setting.
     4. Do NOT duplicate any of these existing tags: ${existingTags.join(', ')}.
     5. Do NOT use any punctuation in the tags (no periods, commas, etc.).
-    6. Generate exactly ${count} tags IN TOTAL across all categories combined. Distribute them to cover at least 3 different categories.
+    6. Generate exactly ${count} tags.
+    
+    CRITICAL INSTRUCTION:
+    - Prioritize tags that are MOST relevant to the Intent: "${intent}".
+    - If Intent is "Generate Questions", focus on Format (e.g., "Multiple Choice", "True False") and Task (e.g., "Include Answer Key").
+    - If Intent is "Explain", focus on Reasoning (e.g., "Use Analogies") and Context.
+    - Do NOT force diversity if it reduces relevance.
     `;
 
     const userPrompt = `Generate ${count} smart tags for a prompt about "${topic}".
